@@ -46,7 +46,9 @@ This ensures atomic execution - either both sides complete or neither does.
 - **State Management**: Tracks in-flight swaps using DashMap for concurrent access
 - **Metrics**: Exposes Prometheus metrics for monitoring
 
-## Installation
+## Quick Start
+
+See [QUICKSTART.md](QUICKSTART.md) for a complete guide to deploying on Avalanche Fuji testnet.
 
 ### Prerequisites
 
@@ -54,7 +56,7 @@ This ensures atomic execution - either both sides complete or neither does.
 - Access to Avalanche C-Chain RPC endpoint
 - Access to Subnet-EVM RPC endpoint
 - Private key with funds on both chains
-- Deployed HTLC contracts on both chains
+- Deployed HTLC contracts on both chains (see [contracts/DEPLOYMENT.md](contracts/DEPLOYMENT.md))
 
 ### Build from Source
 

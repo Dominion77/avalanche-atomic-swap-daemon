@@ -1,26 +1,41 @@
 use crate::{htlc::*, traits::*};
 use alloy::{
-    primitives::{Address, Bytes, TxHash, U256},
+    primitives::{Address, FixedBytes, TxHash, U256},
     providers::{Provider, ProviderBuilder},
-    rpc::types::eth::Filter,
+    network::EthereumWallet,
+    rpc::types::Filter,
     signers::local::PrivateKeySigner,
     sol_types::SolEvent,
 };
+use alloy::sol_types::SolCall;
+use async_trait::async_trait;
 use eyre::Result;
-use std::sync::Arc;
 use url::Url;
 
 pub struct SubnetClient {
-    provider: Arc<dyn Provider>,
+    provider: alloy::providers::fillers::FillProvider<
+        alloy::providers::fillers::JoinFill<
+            alloy::providers::Identity,
+            alloy::providers::fillers::WalletFiller<EthereumWallet>,
+        >,
+        alloy::providers::RootProvider<alloy::transports::http::Http<alloy::transports::http::Client>>,
+        alloy::transports::http::Http<alloy::transports::http::Client>,
+        alloy::network::Ethereum,
+    >,
     htlc: Address,
 }
 
 impl SubnetClient {
     pub async fn new(rpc: Url, htlc: Address, signer: PrivateKeySigner) -> Result<Self> {
+        let wallet = EthereumWallet::from(signer);
         let provider = ProviderBuilder::new()
-            .with_signer(signer)
+            .wallet(wallet)
             .on_http(rpc);
-        Ok(Self { provider: Arc::new(provider), htlc })
+            
+        Ok(Self { 
+            provider, 
+            htlc 
+        })
     }
 }
 
@@ -31,28 +46,37 @@ impl AvalancheChain for SubnetClient {
     }
 
     async fn lock_swap(&self, amount: U256, hashlock: [u8; 32], timelock: u64) -> Result<TxHash> {
-        let call = HTLC::lockCall { amount, hashlock, timelock };
-        let tx = self.provider.send_transaction(
-            alloy::rpc::types::TransactionRequest::new()
-                .to(self.htlc)
-                .value(amount)
-                .input(Bytes::from(call.abi_encode()))
-        ).await?;
-        Ok(tx.get_receipt().await?.transaction_hash)
+        let call = HTLC::lockCall { 
+            amount, 
+            hashlock: FixedBytes::from(hashlock), 
+            timelock: U256::from(timelock)
+        };
+        
+        let tx = alloy::rpc::types::TransactionRequest::default()
+            .to(self.htlc)
+            .value(amount)
+            .input(call.abi_encode().into());
+            
+        let pending = self.provider.send_transaction(tx).await?;
+        let receipt = pending.get_receipt().await?;
+        Ok(receipt.transaction_hash)
     }
 
     async fn claim_swap(&self, secret: [u8; 32]) -> Result<TxHash> {
-        let call = HTLC::claimCall { secret };
-        let tx = self.provider.send_transaction(
-            alloy::rpc::types::TransactionRequest::new()
-                .to(self.htlc)
-                .input(Bytes::from(call.abi_encode()))
-        ).await?;
-        Ok(tx.get_receipt().await?.transaction_hash)
+        let call = HTLC::claimCall { 
+            secret: FixedBytes::from(secret)
+        };
+        
+        let tx = alloy::rpc::types::TransactionRequest::default()
+            .to(self.htlc)
+            .input(call.abi_encode().into());
+            
+        let pending = self.provider.send_transaction(tx).await?;
+        let receipt = pending.get_receipt().await?;
+        Ok(receipt.transaction_hash)
     }
 
     async fn get_swap_initiated_events(&self, from: u64, to: u64) -> Result<Vec<SwapInitiatedEvent>> {
-        // Same logic as C-Chain
         let filter = Filter::new()
             .address(self.htlc)
             .event(SwapInitiated::SIGNATURE)
@@ -68,7 +92,7 @@ impl AvalancheChain for SubnetClient {
                     hashlock: decoded.hashlock.0,
                     amount: decoded.amount,
                     sender: decoded.sender,
-                    timelock: decoded.timelock,
+                    timelock: decoded.timelock.to::<u64>(),
                     tx_hash: log.transaction_hash.unwrap_or_default(),
                 });
             }

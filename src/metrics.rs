@@ -1,5 +1,4 @@
 use axum::{routing::get, Router};
-use once_cell::sync::Lazy;
 use prometheus::{Counter, Encoder, Gauge, TextEncoder, register_counter, register_gauge};
 use std::sync::OnceLock;
 

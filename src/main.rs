@@ -18,8 +18,10 @@ use metrics::start_metrics_server;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
+    dotenvy::dotenv().ok();
+
     tracing_subscriber::fmt()
-        .with_env_filter(tracing::Level::INFO)
+        .with_env_filter("info")
         .init();
 
     let config = Config::parse();

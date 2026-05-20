@@ -1,5 +1,4 @@
 use crate::{metrics, state::{SwapDirection, SwapState}, traits::*};
-use alloy::primitives::TxHash;
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
@@ -33,8 +32,9 @@ impl SwapWatcher {
         let from_c = latest_c.saturating_sub(blocks_back);
         let from_s = latest_s.saturating_sub(blocks_back);
 
-        // Recover C→S
-        for ev in self.cchain.get_swap_initiated_events(from_c, latest_c).await? {
+        // Recover C→S with chunking
+        let c_events = self.fetch_initiated_chunked(&*self.cchain, from_c, latest_c).await?;
+        for ev in c_events {
             if ev.amount.to::<u128>() >= self.min_amount {
                 self.in_flight.insert(ev.hashlock, SwapState::Initiated {
                     direction: SwapDirection::CToS,
@@ -43,8 +43,10 @@ impl SwapWatcher {
                 });
             }
         }
-        // Recover S→C
-        for ev in self.subnet.get_swap_initiated_events(from_s, latest_s).await? {
+        
+        // Recover S→C with chunking
+        let s_events = self.fetch_initiated_chunked(&*self.subnet, from_s, latest_s).await?;
+        for ev in s_events {
             if ev.amount.to::<u128>() >= self.min_amount {
                 self.in_flight.insert(ev.hashlock, SwapState::Initiated {
                     direction: SwapDirection::SToC,
@@ -53,28 +55,74 @@ impl SwapWatcher {
                 });
             }
         }
+        
         metrics::set_in_flight(self.in_flight.len());
         tracing::info!(" Recovered {} in-flight swaps (bidirectional)", self.in_flight.len());
         Ok(())
     }
 
+    async fn fetch_initiated_chunked(
+        &self,
+        chain: &dyn AvalancheChain,
+        from: u64,
+        to: u64,
+    ) -> eyre::Result<Vec<SwapInitiatedEvent>> {
+        const CHUNK_SIZE: u64 = 2000; 
+        let mut all_events = Vec::new();
+        let mut current = from;
+
+        while current <= to {
+            let chunk_end = (current + CHUNK_SIZE).min(to);
+            
+            match chain.get_swap_initiated_events(current, chunk_end).await {
+                Ok(events) => all_events.extend(events),
+                Err(e) => tracing::warn!("Failed to fetch events from {} to {}: {}", current, chunk_end, e),
+            }
+            
+            current = chunk_end + 1;
+            
+            // Small delay to avoid rate limiting
+            if current <= to {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+
+        Ok(all_events)
+    }
+
     pub async fn run(&self) {
-        let mut last_c = 0u64;
-        let mut last_s = 0u64;
+        let mut last_c = self.cchain.get_latest_block().await.unwrap_or(0);
+        let mut last_s = self.subnet.get_latest_block().await.unwrap_or(0);
+
+        tracing::info!("🚀 Starting to watch for swaps (C-Chain: block {}, Echo: block {})", last_c, last_s);
+        tracing::info!("📊 Configuration: min_amount={} wei, poll_interval={}ms", self.min_amount, self.poll_ms);
 
         loop {
             let c_block = self.cchain.get_latest_block().await.unwrap_or(0);
             let s_block = self.subnet.get_latest_block().await.unwrap_or(0);
 
             if c_block > last_c {
-                self.process_c_initiated(last_c + 1, c_block).await;
-                self.process_claimed_on_subnet(last_c + 1, c_block).await; // for S→C direction
-                last_c = c_block;
+                let from = last_c + 1;
+                let to = c_block.min(from + 2000); // Chunk to avoid RPC limits
+                
+                tracing::debug!("📡 C-Chain: New blocks detected ({} -> {}), checking for events...", from, to);
+                self.process_c_initiated(from, to).await;
+                self.process_claimed_on_subnet(from, to).await;
+                last_c = to;
+            } else {
+                tracing::trace!("⏸️  C-Chain: No new blocks (current: {})", c_block);
             }
+            
             if s_block > last_s {
-                self.process_s_initiated(last_s + 1, s_block).await;
-                self.process_claimed_on_cchain(last_s + 1, s_block).await; // for C→S direction
-                last_s = s_block;
+                let from = last_s + 1;
+                let to = s_block.min(from + 2000); // Chunk to avoid RPC limits
+                
+                tracing::debug!("📡 Echo: New blocks detected ({} -> {}), checking for events...", from, to);
+                self.process_s_initiated(from, to).await;
+                self.process_claimed_on_cchain(from, to).await;
+                last_s = to;
+            } else {
+                tracing::trace!("⏸️  Echo: No new blocks (current: {})", s_block);
             }
 
             metrics::set_in_flight(self.in_flight.len());
@@ -84,25 +132,64 @@ impl SwapWatcher {
 
     // C→S direction
     async fn process_c_initiated(&self, from: u64, to: u64) {
+        tracing::debug!("🔍 C→S: Checking blocks {} to {} for SwapInitiated events", from, to);
+        
         let events = match self.cchain.get_swap_initiated_events(from, to).await {
-            Ok(e) => e,
-            Err(e) => { tracing::error!("C-Chain initiated fetch failed: {}", e); return; }
+            Ok(e) => {
+                tracing::debug!("🔍 C→S: Found {} SwapInitiated events", e.len());
+                e
+            },
+            Err(e) => { 
+                tracing::error!("C-Chain initiated fetch failed: {}", e); 
+                return; 
+            }
         };
-        for ev in events {
-            if ev.amount.to::<u128>() < self.min_amount { continue; }
-            if !self.cchain.is_final(ev.tx_hash).await.unwrap_or(false) { continue; }
-
-            metrics::inc_initiated();
-            if let Err(e) = self.subnet.lock_swap(ev.amount, ev.hashlock, ev.timelock).await {
-                tracing::error!("Subnet lock failed (C→S): {}", e);
+        
+        if events.is_empty() {
+            tracing::debug!("🔍 C→S: No events found in this range");
+            return;
+        }
+        
+        for (idx, ev) in events.iter().enumerate() {
+            tracing::info!("🔍 C→S: Event {}: hashlock={}, amount={} wei, timelock={}, tx={}", 
+                idx + 1,
+                hex::encode(ev.hashlock),
+                ev.amount,
+                ev.timelock,
+                hex::encode(ev.tx_hash)
+            );
+            
+            // Check minimum amount
+            let amount_u128 = ev.amount.to::<u128>();
+            tracing::debug!("🔍 C→S: Amount check: {} >= {} (min)?", amount_u128, self.min_amount);
+            if amount_u128 < self.min_amount {
+                tracing::warn!("⚠️  C→S: Skipping - amount {} below minimum {}", amount_u128, self.min_amount);
                 continue;
             }
+            
+            // Check finality
+            tracing::debug!("🔍 C→S: Checking finality for tx {}", hex::encode(ev.tx_hash));
+            let is_final = self.cchain.is_final(ev.tx_hash).await.unwrap_or(false);
+            tracing::debug!("🔍 C→S: Finality check result: {}", is_final);
+            if !is_final {
+                tracing::warn!("⚠️  C→S: Skipping - transaction not yet final");
+                continue;
+            }
+
+            tracing::info!("✅ C→S: Valid swap detected! Locking on Subnet...");
+            metrics::inc_initiated();
+            
+            if let Err(e) = self.subnet.lock_swap(ev.amount, ev.hashlock, ev.timelock).await {
+                tracing::error!("❌ Subnet lock failed (C→S): {}", e);
+                continue;
+            }
+            
             self.in_flight.insert(ev.hashlock, SwapState::Initiated {
                 direction: SwapDirection::CToS,
                 amount: ev.amount,
                 timelock: ev.timelock,
             });
-            tracing::info!(" C→S: Locked on Subnet for hashlock {}", hex::encode(ev.hashlock));
+            tracing::info!("✅ C→S: Locked on Subnet for hashlock {}", hex::encode(ev.hashlock));
         }
     }
 
@@ -131,7 +218,7 @@ impl SwapWatcher {
     }
 
     // Claim logic for C→S (user claims on Subnet → daemon claims on C)
-    async fn process_claimed_on_cchain(&self, from: u64, to: u64) { /* same as previous process_subnet */ 
+    async fn process_claimed_on_cchain(&self, from: u64, to: u64) {
         let events = match self.subnet.get_swap_claimed_events(from, to).await {
             Ok(e) => e,
             Err(e) => { tracing::error!("Subnet claimed fetch failed: {}", e); return; }
@@ -144,7 +231,7 @@ impl SwapWatcher {
                     } else {
                         self.in_flight.remove(&ev.hashlock);
                         metrics::inc_completed();
-                        tracing::info!(" C→S SWAP COMPLETE");
+                        tracing::info!("🎉 C→S SWAP COMPLETE");
                     }
                 }
             }

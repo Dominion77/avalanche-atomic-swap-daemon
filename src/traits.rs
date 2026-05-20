@@ -16,6 +16,7 @@ pub trait AvalancheChain: Send + Sync + 'static {
 pub struct SwapInitiatedEvent {
     pub hashlock: [u8; 32],
     pub amount: U256,
+    #[allow(dead_code)]
     pub sender: Address,
     pub timelock: u64,
     pub tx_hash: TxHash,
@@ -25,5 +26,6 @@ pub struct SwapInitiatedEvent {
 pub struct SwapClaimedEvent {
     pub hashlock: [u8; 32],
     pub secret: [u8; 32],
+    #[allow(dead_code)]
     pub tx_hash: TxHash,
 }

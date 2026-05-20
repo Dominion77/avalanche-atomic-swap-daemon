@@ -10,9 +10,13 @@ pub enum SwapDirection {
 pub enum SwapState {
     Initiated {
         direction: SwapDirection,
+        #[allow(dead_code)]
         amount: U256,
+        #[allow(dead_code)]
         timelock: u64,
     },
+    #[allow(dead_code)]
     LockedOnBoth,
+    #[allow(dead_code)]
     ClaimedOnMirror,
 }
