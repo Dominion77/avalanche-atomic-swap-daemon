@@ -2,11 +2,21 @@ use crate::{metrics, state::{SwapDirection, SwapState}, traits::*};
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
+use alloy::primitives::TxHash;
+
+#[derive(Clone)]
+struct PendingSwap {
+    amount: alloy::primitives::U256,
+    hashlock: [u8; 32],
+    timelock: u64,
+    direction: SwapDirection,
+}
 
 pub struct SwapWatcher {
     cchain: Arc<dyn AvalancheChain>,
     subnet: Arc<dyn AvalancheChain>,
     in_flight: Arc<DashMap<[u8; 32], SwapState>>,
+    pending_finality: Arc<DashMap<TxHash, PendingSwap>>,
     min_amount: u128,
     poll_ms: u64,
 }
@@ -21,6 +31,7 @@ impl SwapWatcher {
             cchain,
             subnet,
             in_flight: Arc::new(DashMap::new()),
+            pending_finality: Arc::new(DashMap::new()),
             min_amount,
             poll_ms: 4000,
         }
@@ -94,10 +105,19 @@ impl SwapWatcher {
         let mut last_c = self.cchain.get_latest_block().await.unwrap_or(0);
         let mut last_s = self.subnet.get_latest_block().await.unwrap_or(0);
 
-        tracing::info!("🚀 Starting to watch for swaps (C-Chain: block {}, Echo: block {})", last_c, last_s);
-        tracing::info!("📊 Configuration: min_amount={} wei, poll_interval={}ms", self.min_amount, self.poll_ms);
+        tracing::info!(" Starting to watch for swaps (C-Chain: block {}, Echo: block {})", last_c, last_s);
+        tracing::info!(" Configuration: min_amount={} wei ({} AVAX), poll_interval={}ms", 
+            self.min_amount, 
+            self.min_amount as f64 / 1e18,
+            self.poll_ms
+        );
+        tracing::info!("  NOTE: Only NEW events after block {} (C-Chain) and {} (Echo) will be detected", last_c, last_s);
+        tracing::info!(" TIP: If you initiated a swap before starting the daemon, it won't be detected automatically");
 
         loop {
+            // Check pending swaps waiting for finality
+            self.check_pending_finality().await;
+            
             let c_block = self.cchain.get_latest_block().await.unwrap_or(0);
             let s_block = self.subnet.get_latest_block().await.unwrap_or(0);
 
@@ -105,28 +125,73 @@ impl SwapWatcher {
                 let from = last_c + 1;
                 let to = c_block.min(from + 2000); // Chunk to avoid RPC limits
                 
-                tracing::debug!("📡 C-Chain: New blocks detected ({} -> {}), checking for events...", from, to);
+                tracing::debug!(" C-Chain: New blocks detected ({} -> {}), checking for events...", from, to);
                 self.process_c_initiated(from, to).await;
                 self.process_claimed_on_subnet(from, to).await;
                 last_c = to;
             } else {
-                tracing::trace!("⏸️  C-Chain: No new blocks (current: {})", c_block);
+                tracing::trace!("  C-Chain: No new blocks (current: {})", c_block);
             }
             
             if s_block > last_s {
                 let from = last_s + 1;
                 let to = s_block.min(from + 2000); // Chunk to avoid RPC limits
                 
-                tracing::debug!("📡 Echo: New blocks detected ({} -> {}), checking for events...", from, to);
+                tracing::debug!(" Echo: New blocks detected ({} -> {}), checking for events...", from, to);
                 self.process_s_initiated(from, to).await;
                 self.process_claimed_on_cchain(from, to).await;
                 last_s = to;
             } else {
-                tracing::trace!("⏸️  Echo: No new blocks (current: {})", s_block);
+                tracing::trace!("  Echo: No new blocks (current: {})", s_block);
             }
 
             metrics::set_in_flight(self.in_flight.len());
             sleep(Duration::from_millis(self.poll_ms)).await;
+        }
+    }
+
+    async fn check_pending_finality(&self) {
+        let pending: Vec<_> = self.pending_finality.iter().map(|e| (*e.key(), e.value().clone())).collect();
+        
+        for (tx_hash, swap) in pending {
+            let is_final = match swap.direction {
+                SwapDirection::CToS => self.cchain.is_final(tx_hash).await.unwrap_or(false),
+                SwapDirection::SToC => self.subnet.is_final(tx_hash).await.unwrap_or(false),
+            };
+            
+            if is_final {
+                tracing::info!("Transaction now final, processing swap for hashlock {}", hex::encode(swap.hashlock));
+                self.pending_finality.remove(&tx_hash);
+                
+                match swap.direction {
+                    SwapDirection::CToS => {
+                        metrics::inc_initiated();
+                        if let Err(e) = self.subnet.lock_swap(swap.amount, swap.hashlock, swap.timelock).await {
+                            tracing::error!("Subnet lock failed (C->S): {}", e);
+                        } else {
+                            self.in_flight.insert(swap.hashlock, SwapState::Initiated {
+                                direction: SwapDirection::CToS,
+                                amount: swap.amount,
+                                timelock: swap.timelock,
+                            });
+                            tracing::info!("C->S: Locked on Subnet for hashlock {}", hex::encode(swap.hashlock));
+                        }
+                    }
+                    SwapDirection::SToC => {
+                        metrics::inc_initiated();
+                        if let Err(e) = self.cchain.lock_swap(swap.amount, swap.hashlock, swap.timelock).await {
+                            tracing::error!("C-Chain lock failed (S->C): {}", e);
+                        } else {
+                            self.in_flight.insert(swap.hashlock, SwapState::Initiated {
+                                direction: SwapDirection::SToC,
+                                amount: swap.amount,
+                                timelock: swap.timelock,
+                            });
+                            tracing::info!("S->C: Locked on C-Chain for hashlock {}", hex::encode(swap.hashlock));
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -172,7 +237,13 @@ impl SwapWatcher {
             let is_final = self.cchain.is_final(ev.tx_hash).await.unwrap_or(false);
             tracing::debug!("🔍 C→S: Finality check result: {}", is_final);
             if !is_final {
-                tracing::warn!("⚠️  C→S: Skipping - transaction not yet final");
+                tracing::info!("Waiting for finality - added to pending queue (hashlock: {})", hex::encode(ev.hashlock));
+                self.pending_finality.insert(ev.tx_hash, PendingSwap {
+                    amount: ev.amount,
+                    hashlock: ev.hashlock,
+                    timelock: ev.timelock,
+                    direction: SwapDirection::CToS,
+                });
                 continue;
             }
 
@@ -201,7 +272,17 @@ impl SwapWatcher {
         };
         for ev in events {
             if ev.amount.to::<u128>() < self.min_amount { continue; }
-            if !self.subnet.is_final(ev.tx_hash).await.unwrap_or(false) { continue; }
+            
+            let is_final = self.subnet.is_final(ev.tx_hash).await.unwrap_or(false);
+            if !is_final {
+                self.pending_finality.insert(ev.tx_hash, PendingSwap {
+                    amount: ev.amount,
+                    hashlock: ev.hashlock,
+                    timelock: ev.timelock,
+                    direction: SwapDirection::SToC,
+                });
+                continue;
+            }
 
             metrics::inc_initiated();
             if let Err(e) = self.cchain.lock_swap(ev.amount, ev.hashlock, ev.timelock).await {
@@ -219,21 +300,39 @@ impl SwapWatcher {
 
     // Claim logic for C→S (user claims on Subnet → daemon claims on C)
     async fn process_claimed_on_cchain(&self, from: u64, to: u64) {
+        tracing::debug!("Checking Echo blocks {} to {} for SwapClaimed events", from, to);
         let events = match self.subnet.get_swap_claimed_events(from, to).await {
-            Ok(e) => e,
+            Ok(e) => {
+                tracing::debug!("Found {} SwapClaimed events on Echo", e.len());
+                e
+            },
             Err(e) => { tracing::error!("Subnet claimed fetch failed: {}", e); return; }
         };
         for ev in events {
+            tracing::info!("SwapClaimed on Echo: hashlock={}, secret={}", 
+                hex::encode(ev.hashlock), hex::encode(ev.secret));
+            
             if let Some(state) = self.in_flight.get(&ev.hashlock) {
+                tracing::info!("Found matching in-flight swap");
                 if let SwapState::Initiated { direction: SwapDirection::CToS, .. } = *state {
-                    if let Err(e) = self.cchain.claim_swap(ev.secret).await {
-                        tracing::error!("C-Chain claim failed: {}", e);
-                    } else {
-                        self.in_flight.remove(&ev.hashlock);
-                        metrics::inc_completed();
-                        tracing::info!("🎉 C→S SWAP COMPLETE");
+                    tracing::info!("Direction is C->S, claiming on C-Chain...");
+                    match self.cchain.claim_swap(ev.secret).await {
+                        Ok(tx_hash) => {
+                            tracing::info!("Claim successful! Tx: {}", hex::encode(tx_hash));
+                            self.in_flight.remove(&ev.hashlock);
+                            metrics::inc_completed();
+                            tracing::info!("C->S SWAP COMPLETE");
+                        }
+                        Err(e) => {
+                            tracing::error!("C-Chain claim failed: {}", e);
+                        }
                     }
+                } else {
+                    tracing::warn!("Swap direction mismatch - expected C->S");
                 }
+            } else {
+                tracing::warn!("No in-flight swap found for hashlock {}", hex::encode(ev.hashlock));
+                tracing::debug!("Current in-flight swaps: {}", self.in_flight.len());
             }
         }
     }

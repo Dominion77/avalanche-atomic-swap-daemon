@@ -6,41 +6,29 @@ use alloy::{
     rpc::types::Filter,
     signers::local::PrivateKeySigner,
     sol_types::SolEvent,
+    transports::http::{Client, Http},
 };
 use alloy::sol_types::SolCall;
 use async_trait::async_trait;
 use eyre::Result;
-use reqwest::Client as ReqwestClient;
-use serde_json::json;
 use url::Url;
 
 pub struct CChainClient {
-    provider: alloy::providers::fillers::FillProvider<
-        alloy::providers::fillers::JoinFill<
-            alloy::providers::Identity,
-            alloy::providers::fillers::WalletFiller<EthereumWallet>,
-        >,
-        alloy::providers::RootProvider<alloy::transports::http::Http<alloy::transports::http::Client>>,
-        alloy::transports::http::Http<alloy::transports::http::Client>,
-        alloy::network::Ethereum,
-    >,
+    provider: Box<dyn Provider<Http<Client>>>,
     htlc: Address,
-    rpc_client: ReqwestClient,
-    rpc_url: Url,
 }
 
 impl CChainClient {
     pub async fn new(rpc: Url, htlc: Address, signer: PrivateKeySigner) -> Result<Self> {
         let wallet = EthereumWallet::from(signer);
         let provider = ProviderBuilder::new()
+            .with_recommended_fillers()
             .wallet(wallet)
-            .on_http(rpc.clone());
+            .on_http(rpc);
         
         Ok(Self {
-            provider,
+            provider: Box::new(provider),
             htlc,
-            rpc_client: ReqwestClient::new(),
-            rpc_url: rpc,
         })
     }
 }
@@ -62,10 +50,22 @@ impl AvalancheChain for CChainClient {
             .to(self.htlc)
             .value(amount)
             .input(call.abi_encode().into());
-            
+        
         let pending = self.provider.send_transaction(tx).await?;
-        let receipt = pending.get_receipt().await?;
-        Ok(receipt.transaction_hash)
+        let tx_hash = *pending.tx_hash();
+        tracing::debug!("Lock transaction sent: {}", hex::encode(tx_hash));
+        
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            pending.get_receipt()
+        ).await {
+            Ok(Ok(receipt)) => Ok(receipt.transaction_hash),
+            Ok(Err(e)) => Err(e.into()),
+            Err(_) => {
+                tracing::warn!("Timeout waiting for lock receipt: {}", hex::encode(tx_hash));
+                Ok(tx_hash)
+            }
+        }
     }
 
     async fn claim_swap(&self, secret: [u8; 32]) -> Result<TxHash> {
@@ -73,13 +73,35 @@ impl AvalancheChain for CChainClient {
             secret: FixedBytes::from(secret)
         };
         
+        tracing::debug!("Preparing claim transaction with secret {}", hex::encode(secret));
+        
         let tx = alloy::rpc::types::TransactionRequest::default()
             .to(self.htlc)
             .input(call.abi_encode().into());
-            
+        
+        tracing::debug!("Sending claim transaction...");
         let pending = self.provider.send_transaction(tx).await?;
-        let receipt = pending.get_receipt().await?;
-        Ok(receipt.transaction_hash)
+        let tx_hash = *pending.tx_hash();
+        tracing::info!("Claim transaction sent: {}", hex::encode(tx_hash));
+        
+        tracing::debug!("Waiting for receipt...");
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            pending.get_receipt()
+        ).await {
+            Ok(Ok(receipt)) => {
+                tracing::info!("Claim transaction confirmed in block {}", receipt.block_number.unwrap_or(0));
+                Ok(receipt.transaction_hash)
+            }
+            Ok(Err(e)) => {
+                tracing::error!("Failed to get receipt: {}", e);
+                Err(e.into())
+            }
+            Err(_) => {
+                tracing::warn!("Timeout waiting for receipt, but transaction was sent: {}", hex::encode(tx_hash));
+                Ok(tx_hash)
+            }
+        }
     }
 
     async fn get_swap_initiated_events(&self, from: u64, to: u64) -> Result<Vec<SwapInitiatedEvent>> {
@@ -149,22 +171,24 @@ impl AvalancheChain for CChainClient {
     }
 
     async fn is_final(&self, tx_hash: TxHash) -> Result<bool> {
-        let payload = json!({
-            "jsonrpc": "2.0",
-            "method": "platform.getTxStatus",
-            "params": [tx_hash.to_string()],
-            "id": 1
-        });
-
-        let resp: serde_json::Value = self
-            .rpc_client
-            .post(self.rpc_url.clone())
-            .json(&payload)
-            .send()
-            .await?
-            .json()
-            .await?;
-
-        Ok(resp["result"]["status"].as_str() == Some("Accepted"))
+        match self.provider.get_transaction_receipt(tx_hash).await? {
+            Some(receipt) => {
+                if let Some(tx_block) = receipt.block_number {
+                    let current_block = self.provider.get_block_number().await?;
+                    // Consider final after 3 confirmations
+                    let confirmations = current_block.saturating_sub(tx_block);
+                    tracing::debug!(" Finality check: tx block={}, current={}, confirmations={}", 
+                        tx_block, current_block, confirmations);
+                    Ok(confirmations >= 3)
+                } else {
+                    tracing::warn!("  Transaction receipt has no block number");
+                    Ok(false)
+                }
+            }
+            None => {
+                tracing::warn!("  Transaction receipt not found for {}", hex::encode(tx_hash));
+                Ok(false)
+            }
+        }
     }
 }

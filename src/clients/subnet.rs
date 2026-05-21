@@ -6,6 +6,7 @@ use alloy::{
     rpc::types::Filter,
     signers::local::PrivateKeySigner,
     sol_types::SolEvent,
+    transports::http::{Client, Http},
 };
 use alloy::sol_types::SolCall;
 use async_trait::async_trait;
@@ -13,15 +14,7 @@ use eyre::Result;
 use url::Url;
 
 pub struct SubnetClient {
-    provider: alloy::providers::fillers::FillProvider<
-        alloy::providers::fillers::JoinFill<
-            alloy::providers::Identity,
-            alloy::providers::fillers::WalletFiller<EthereumWallet>,
-        >,
-        alloy::providers::RootProvider<alloy::transports::http::Http<alloy::transports::http::Client>>,
-        alloy::transports::http::Http<alloy::transports::http::Client>,
-        alloy::network::Ethereum,
-    >,
+    provider: Box<dyn Provider<Http<Client>>>,
     htlc: Address,
 }
 
@@ -29,11 +22,12 @@ impl SubnetClient {
     pub async fn new(rpc: Url, htlc: Address, signer: PrivateKeySigner) -> Result<Self> {
         let wallet = EthereumWallet::from(signer);
         let provider = ProviderBuilder::new()
+            .with_recommended_fillers()
             .wallet(wallet)
             .on_http(rpc);
             
         Ok(Self { 
-            provider, 
+            provider: Box::new(provider), 
             htlc 
         })
     }
@@ -56,10 +50,22 @@ impl AvalancheChain for SubnetClient {
             .to(self.htlc)
             .value(amount)
             .input(call.abi_encode().into());
-            
+        
         let pending = self.provider.send_transaction(tx).await?;
-        let receipt = pending.get_receipt().await?;
-        Ok(receipt.transaction_hash)
+        let tx_hash = *pending.tx_hash();
+        tracing::debug!("Subnet lock transaction sent: {}", hex::encode(tx_hash));
+        
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            pending.get_receipt()
+        ).await {
+            Ok(Ok(receipt)) => Ok(receipt.transaction_hash),
+            Ok(Err(e)) => Err(e.into()),
+            Err(_) => {
+                tracing::warn!("Timeout waiting for subnet lock receipt: {}", hex::encode(tx_hash));
+                Ok(tx_hash)
+            }
+        }
     }
 
     async fn claim_swap(&self, secret: [u8; 32]) -> Result<TxHash> {
@@ -70,10 +76,22 @@ impl AvalancheChain for SubnetClient {
         let tx = alloy::rpc::types::TransactionRequest::default()
             .to(self.htlc)
             .input(call.abi_encode().into());
-            
+        
         let pending = self.provider.send_transaction(tx).await?;
-        let receipt = pending.get_receipt().await?;
-        Ok(receipt.transaction_hash)
+        let tx_hash = *pending.tx_hash();
+        tracing::debug!("Subnet claim transaction sent: {}", hex::encode(tx_hash));
+        
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            pending.get_receipt()
+        ).await {
+            Ok(Ok(receipt)) => Ok(receipt.transaction_hash),
+            Ok(Err(e)) => Err(e.into()),
+            Err(_) => {
+                tracing::warn!("Timeout waiting for subnet claim receipt: {}", hex::encode(tx_hash));
+                Ok(tx_hash)
+            }
+        }
     }
 
     async fn get_swap_initiated_events(&self, from: u64, to: u64) -> Result<Vec<SwapInitiatedEvent>> {

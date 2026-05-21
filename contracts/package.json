@@ -12,7 +12,10 @@
     "verify:fuji": "hardhat verify --network fuji",
     "verify:echo": "hardhat verify --network echo",
     "test-swap": "hardhat run scripts/test-swap.ts --network fuji",
-    "claim-swap": "hardhat run scripts/claim-swap.ts --network echo"
+    "claim-swap": "hardhat run scripts/claim-swap.ts --network echo",
+    "claim-cchain": "hardhat run scripts/claim-cchain.ts",
+    "check-swap": "hardhat run scripts/check-swap.ts",
+    "manual-mirror": "hardhat run scripts/manual-mirror.ts"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-chai-matchers": "^2.1.2",
