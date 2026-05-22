@@ -1,19 +1,13 @@
+use avalanche_atomic_swap_daemon::{
+    CChainClient,
+    SubnetClient,
+    Config,
+    metrics::start_metrics_server,
+    SwapWatcher,
+};
 use alloy::signers::local::PrivateKeySigner;
 use clap::Parser;
 use std::sync::Arc;
-
-mod config;
-mod traits;
-mod htlc;
-mod clients;
-mod watcher;
-mod state;
-mod metrics;
-
-use config::Config;
-use clients::{cchain::CChainClient, subnet::SubnetClient};
-use watcher::SwapWatcher;
-use metrics::start_metrics_server;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -26,7 +20,7 @@ async fn main() -> eyre::Result<()> {
     let config = Config::parse();
     tracing::info!(" Starting Avalanche Atomic Swap Daemon v0.2.0 (bidirectional + metrics)...");
 
-    metrics::init_metrics();
+    avalanche_atomic_swap_daemon::metrics::init_metrics();
 
     let signer: PrivateKeySigner = config.private_key.parse()
         .expect("Invalid private key format");

@@ -1,6 +1,6 @@
 [package]
 name = "avalanche-atomic-swap-daemon"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Lord Herrschaft"]
@@ -12,6 +12,14 @@ readme = "README.md"
 keywords = ["avalanche", "atomic-swap", "htlc", "blockchain", "defi"]
 categories = ["cryptography::cryptocurrencies", "network-programming"]
 rust-version = "1.75"
+
+[lib]
+name = "avalanche_atomic_swap_daemon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "avalanche-atomic-swap-daemon"
+path = "src/main.rs"
 
 [dependencies]
 alloy = { version = "0.8", features = ["full", "node-bindings", "provider-http", "signer-local", "contract"] }

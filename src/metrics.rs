@@ -6,16 +6,21 @@ static INITIATED: OnceLock<Counter> = OnceLock::new();
 static COMPLETED: OnceLock<Counter> = OnceLock::new();
 static IN_FLIGHT: OnceLock<Gauge> = OnceLock::new();
 
+/// Initializes Prometheus metrics collectors
 pub fn init_metrics() {
     let _ = INITIATED.set(register_counter!("avalanche_atomic_swaps_initiated_total", "Total initiated swaps").unwrap());
     let _ = COMPLETED.set(register_counter!("avalanche_atomic_swaps_completed_total", "Total completed swaps").unwrap());
     let _ = IN_FLIGHT.set(register_gauge!("avalanche_atomic_swaps_in_flight", "Current in-flight swaps").unwrap());
 }
 
+/// Increments the initiated swaps counter
 pub fn inc_initiated() { if let Some(c) = INITIATED.get() { c.inc(); } }
+/// Increments the completed swaps counter
 pub fn inc_completed() { if let Some(c) = COMPLETED.get() { c.inc(); } }
+/// Sets the current number of in-flight swaps
 pub fn set_in_flight(n: usize) { if let Some(g) = IN_FLIGHT.get() { g.set(n as f64); } }
 
+/// Starts the Prometheus metrics HTTP server
 pub async fn start_metrics_server(port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let app = Router::new().route("/metrics", get(metrics_handler));
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;

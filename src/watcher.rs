@@ -12,6 +12,7 @@ struct PendingSwap {
     direction: SwapDirection,
 }
 
+/// Swap watcher that monitors both chains for atomic swap events
 pub struct SwapWatcher {
     cchain: Arc<dyn AvalancheChain>,
     subnet: Arc<dyn AvalancheChain>,
@@ -22,6 +23,12 @@ pub struct SwapWatcher {
 }
 
 impl SwapWatcher {
+    /// Creates a new swap watcher instance
+    ///
+    /// # Arguments
+    /// * `cchain` - C-Chain client implementation
+    /// * `subnet` - Subnet-EVM client implementation
+    /// * `min_amount` - Minimum swap amount in wei
     pub async fn new(
         cchain: Arc<dyn AvalancheChain>,
         subnet: Arc<dyn AvalancheChain>,
@@ -37,6 +44,10 @@ impl SwapWatcher {
         }
     }
 
+    /// Recovers in-flight swaps by scanning recent blocks
+    ///
+    /// # Arguments
+    /// * `blocks_back` - Number of blocks to scan backwards from current
     pub async fn recover_state(&self, blocks_back: u64) -> eyre::Result<()> {
         let latest_c = self.cchain.get_latest_block().await?;
         let latest_s = self.subnet.get_latest_block().await?;
@@ -101,6 +112,10 @@ impl SwapWatcher {
         Ok(all_events)
     }
 
+    /// Starts the main event loop to monitor and process swaps
+    ///
+    /// This function runs indefinitely, polling both chains for new events.
+    /// It will automatically detect swaps, mirror them, and complete claims.
     pub async fn run(&self) {
         let mut last_c = self.cchain.get_latest_block().await.unwrap_or(0);
         let mut last_s = self.subnet.get_latest_block().await.unwrap_or(0);

@@ -13,12 +13,19 @@ use async_trait::async_trait;
 use eyre::Result;
 use url::Url;
 
+/// C-Chain client for interacting with HTLC contracts
 pub struct CChainClient {
     provider: Box<dyn Provider<Http<Client>>>,
     htlc: Address,
 }
 
 impl CChainClient {
+    /// Creates a new C-Chain client
+    ///
+    /// # Arguments
+    /// * `rpc` - RPC endpoint URL
+    /// * `htlc` - HTLC contract address
+    /// * `signer` - Private key signer for transactions
     pub async fn new(rpc: Url, htlc: Address, signer: PrivateKeySigner) -> Result<Self> {
         let wallet = EthereumWallet::from(signer);
         let provider = ProviderBuilder::new()

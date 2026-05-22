@@ -13,12 +13,19 @@ use async_trait::async_trait;
 use eyre::Result;
 use url::Url;
 
+/// Subnet-EVM client for interacting with HTLC contracts
 pub struct SubnetClient {
     provider: Box<dyn Provider<Http<Client>>>,
     htlc: Address,
 }
 
 impl SubnetClient {
+    /// Creates a new Subnet-EVM client
+    ///
+    /// # Arguments
+    /// * `rpc` - RPC endpoint URL
+    /// * `htlc` - HTLC contract address
+    /// * `signer` - Private key signer for transactions
     pub async fn new(rpc: Url, htlc: Address, signer: PrivateKeySigner) -> Result<Self> {
         let wallet = EthereumWallet::from(signer);
         let provider = ProviderBuilder::new()
