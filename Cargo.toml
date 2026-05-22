@@ -1,10 +1,17 @@
 [package]
 name = "avalanche-atomic-swap-daemon"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 authors = ["Lord Herrschaft"]
-description = "Production HTLC atomic swap daemon (C-Chain ↔ any Subnet-EVM) — bidirectional + Prometheus"
+description = "Production-ready HTLC atomic swap daemon for Avalanche C-Chain and Subnet-EVM chains with bidirectional support and Prometheus metrics"
+repository = "https://github.com/Dominion77/avalanche-atomic-swap-daemon"
+homepage = "https://github.com/Dominion77/avalanche-atomic-swap-daemon"
+documentation = "https://docs.rs/avalanche-atomic-swap-daemon"
+readme = "README.md"
+keywords = ["avalanche", "atomic-swap", "htlc", "blockchain", "defi"]
+categories = ["cryptography::cryptocurrencies", "network-programming"]
+rust-version = "1.75"
 
 [dependencies]
 alloy = { version = "0.8", features = ["full", "node-bindings", "provider-http", "signer-local", "contract"] }

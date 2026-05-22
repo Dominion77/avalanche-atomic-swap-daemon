@@ -123,7 +123,7 @@ impl AvalancheChain for CChainClient {
         for (idx, log) in logs.iter().enumerate() {
             tracing::debug!("🔍 C-Chain: Processing log {}: tx={}, block={}", 
                 idx + 1,
-                log.transaction_hash.map(|h| hex::encode(h)).unwrap_or_else(|| "none".to_string()),
+                log.transaction_hash.map(hex::encode).unwrap_or_else(|| "none".to_string()),
                 log.block_number.unwrap_or(0)
             );
             

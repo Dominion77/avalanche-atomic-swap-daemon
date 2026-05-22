@@ -1,7 +1,6 @@
 use alloy::signers::local::PrivateKeySigner;
 use clap::Parser;
 use std::sync::Arc;
-use tracing_subscriber;
 
 mod config;
 mod traits;
