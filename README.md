@@ -1,7 +1,7 @@
 # Avalanche Atomic Swap Daemon
 
 [![Crates.io](https://img.shields.io/crates/v/avalanche-atomic-swap-daemon.svg)](https://crates.io/crates/avalanche-atomic-swap-daemon)
-[![Documentation](https://docs.rs/avalanche-atomic-swap-daemon/badge.svg)](https://docs.rs/avalanche-atomic-swap-daemon)
+[![Documentation](https://docs.rs/avalanche-atomic-swap-daemon/badge.svg)](https://docs.rs/avalanche-atomic-swap-daemon/latest/avalanche_atomic_swap_daemon/)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![Rust Version](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org)
 
