@@ -1,7 +1,45 @@
 # Avalanche Atomic Swap Daemon
 
+[![Crates.io](https://img.shields.io/crates/v/avalanche-atomic-swap-daemon.svg)](https://crates.io/crates/avalanche-atomic-swap-daemon)
+[![Documentation](https://docs.rs/avalanche-atomic-swap-daemon/badge.svg)](https://docs.rs/avalanche-atomic-swap-daemon)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+[![Rust Version](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org)
+
 A production-ready HTLC (Hash Time-Locked Contract) atomic swap daemon for bidirectional swaps between Avalanche C-Chain and any Subnet-EVM chain. Built with Rust for performance and reliability.
-For liquidity providers, bridge teams, and institutional subnet operators.
+
+**For liquidity providers, bridge teams, and institutional subnet operators.**
+
+---
+
+## 📦 Installation
+
+```bash
+cargo install avalanche-atomic-swap-daemon
+```
+
+Or build from source:
+```bash
+git clone https://github.com/yourusername/avalanche-atomic-swap-daemon
+cd avalanche-atomic-swap-daemon
+cargo build --release
+```
+
+## 🚀 Quick Start
+
+See [QUICKSTART.md](QUICKSTART.md) for complete deployment guide.
+
+```bash
+# Configure via environment variables
+export SUBNET_RPC="https://subnet.example.com/rpc"
+export DAEMON_PRIVATE_KEY="0x..."
+export HTLC_CCHAIN="0x..."
+export HTLC_SUBNET="0x..."
+
+# Run the daemon
+avalanche-atomic-swap-daemon
+```
+
+---
 
 ## Features
 
@@ -233,12 +271,40 @@ src/
 
 ## License
 
-MIT
+Dual-licensed under:
+- MIT License ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+
+at your option.
 
 ## Author
 
-Lord Herrschaft
+**Lord Herrschaft**
 
 ## Contributing
 
-Contributions are welcome! Please open an issue or submit a pull request.
+Contributions are welcome! Please:
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes with tests
+4. Submit a pull request
+
+## Metadata
+
+- **Version**: 0.2.0
+- **Rust Version**: 1.75+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/yourusername/avalanche-atomic-swap-daemon
+- **Documentation**: https://docs.rs/avalanche-atomic-swap-daemon
+- **Crates.io**: https://crates.io/crates/avalanche-atomic-swap-daemon
+
+### Keywords
+`avalanche`, `atomic-swap`, `htlc`, `blockchain`, `defi`
+
+### Categories
+- Cryptography (Cryptocurrencies)
+- Network Programming
+
+---
+
+**Built with ❤️ for the Avalanche ecosystem**
